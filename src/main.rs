@@ -6,6 +6,7 @@ use ring::rand::{SystemRandom, SecureRandom};
 use rug::ops::DivRounding;
 use std::io::{self, Write};
 
+// Generate a random rug::Integer ∈ ℤ ∩ [lower, upper]
 fn random_integer_between(lower: &Integer, upper: &Integer) -> Integer {
     assert!(lower <= upper);
 
@@ -23,10 +24,12 @@ fn random_integer_between(lower: &Integer, upper: &Integer) -> Integer {
     }
 }
 
+// Check if an integer n is prime
 fn is_prime(n: &Integer) -> bool {
     !matches!(n.is_probably_prime(20), IsPrime::No)
 }
 
+// Read input from stdin
 fn read_input() -> String {
     let mut input = String::new();
     io::stdin()
@@ -35,6 +38,7 @@ fn read_input() -> String {
     input
 }
 
+// Compute the unique prime factors of an integer n
 fn prime_factors(mut n: Integer) -> Vec<Integer> {
     let mut factors = Vec::new();
     let mut d = Integer::from(2);
@@ -56,75 +60,138 @@ fn prime_factors(mut n: Integer) -> Vec<Integer> {
     factors
 }
 
-fn find_generator(order: &Integer) -> Integer {
+// Find the generator of the prime field ℤ_n
+fn find_generator(n: &Integer) -> Integer {
     let mut gen: Integer;
     loop {
-        gen = random_integer_between(Integer::ONE, order);
-        let prod: Integer= order.clone() - 1;
-        let factors = prime_factors(prod.clone());
-        if factors.iter().all(|x| gen.clone().pow_mod(&(prod.clone() / x), order).unwrap() != Integer::ONE.clone()) {
+        gen = random_integer_between(Integer::ONE, n);
+
+        // Factorize (n - 1)
+        let factors = prime_factors(n.clone() - 1);
+        
+        // If gen^[(n - 1) / p] ≢ 1 mod n ∀ p ∈ factors, then gen is a generator of ℤ 
+        if factors.iter().all(|x| gen.clone().pow_mod(&((n.clone() - 1) / x), n).unwrap() != Integer::ONE.clone()) {
             break;
         }
     }
     gen
 }
 
-fn br_reduce(modulus: &Integer, dividend: &Integer) -> Integer {
-    assert!(dividend.clone() < (modulus.clone().pow(2)));
-    let k: u32 = Float::with_val(64, Float::parse(modulus.to_string()).unwrap()).log2().ceil().to_integer().unwrap().to_u32().unwrap();
-    assert!(Integer::from(2).pow(k) > modulus.clone());
-    let r = Integer::from(4).pow(k).div_floor(modulus.clone());
-    let t = dividend.clone() - (modulus.clone() * ((dividend * r) >> (k * 2)));
-    if t < modulus.clone() {
+// Barrett-reduce x modulo n
+fn br_reduce(n: &Integer, x: &Integer) -> Integer {
+    
+    // x has to be less than n^2
+    assert!(x.clone() < (n.clone().pow(2)));
+
+    // Choose k as ⌈log2 n⌉
+    let k: u32 = Float::with_val(64, Float::parse(n.to_string()).unwrap())
+        .log2()
+        .ceil()
+        .to_integer()
+        .unwrap()
+        .to_u32()
+        .unwrap();
+
+    // Ensure 2^k > n
+    assert!(Integer::from(2).pow(k) > n.clone());
+
+    // Compute r = ⌊4^k / n⌋
+    let r = Integer::from(4).pow(k).div_floor(n.clone());
+
+    // Compute t = x - (n * ⌊xr / 4^k⌋) using right shifts
+    let t = x.clone() - (n.clone() * ((x * r) >> (k * 2)));
+
+    // If t < n return t else return t - n
+    if t < n.clone() {
         return t;
     }
-    t - modulus
+    t - n
 }
 
-fn mg_reduce(modulus: &Integer, a: &Integer, b: &Integer) -> Integer {
-    let r = modulus.clone().next_power_of_two();
-    assert!(r.clone().gcd(modulus) == 1);
-    let r_inv = r.clone().invert(modulus).unwrap();
-    let k: Integer = ((r.clone() * r_inv.clone()) - 1) / modulus.clone();
-    let x: Integer = (a * r.clone()).modulo(modulus) * (b * r.clone()).modulo(modulus);
-    let t: Integer = x.clone() + (modulus.clone() * (x.clone() * k.clone()).bitand(r.clone() - 1));
+// Perform Montgomery multiplication on {a, b} reduced modulo n
+fn mg_reduce(n: &Integer, a: &Integer, b: &Integer) -> Integer {
+
+    // Compute the power of two closest to r
+    let r = n.clone().next_power_of_two();
+
+    // Ensure r is coprime to n
+    assert!(r.clone().gcd(n) == 1);
+
+    // Compute r_inv = r^(-1) mod n
+    let r_inv = r.clone().invert(n).unwrap();
+
+    // Compute k = (r * r_inv)  - 1) / n
+    let k: Integer = ((r.clone() * r_inv.clone()) - 1) / n.clone();
+
+    // Compute x = (ar mod n) * (br mod n)
+    let x: Integer = (a * r.clone()).modulo(n) * (b * r.clone()).modulo(n);
+
+    // Compute t = x + [n * (xk mod r)] using bitmasks
+    let t: Integer = x.clone() + (n.clone() * (x.clone() * k.clone()).bitand(r.clone() - 1));
+
+    // Compute u = t / r using rightshifts
     let u: Integer = t.clone().shr((r - Integer::ONE).significant_bits());
-    if u > modulus.clone() {
-        return br_reduce(modulus, &((u - modulus) * r_inv));
+
+    // Return [(u - n) * r_inv] mod n if u > n else return (u * r_inv) mod n
+    if u > n.clone() {
+        return br_reduce(n, &((u - n) * r_inv));
     }
-    br_reduce(modulus, &(u * r_inv))
+    br_reduce(n, &(u * r_inv))
 }
 
+// Compute the forward/inverse number-theoretic transform of a given vector
 fn ntt(input: &[Integer], mwm: &mut Option<Integer>, omg: &mut Option<Integer>, inverse: bool) -> (Vec<Integer>, Integer, Integer) {
-    let length = Integer::from(input.len());
-    let max_elem: Integer =  input
+    let l = Integer::from(input.len());
+
+    // Find maximum element in input
+    let maxm: Integer =  input
         .iter()
         .cloned()
         .max()
         .unwrap();
+
+    // If no minimum working modulus passed, calculate mwm > maxm, mwm > l
     if mwm.is_none() { 
-        *mwm = Some(std::cmp::max(max_elem + 1, length.clone() + 1)); 
+        *mwm = Some(std::cmp::max(maxm + 1, l.clone() + 1)); 
     } else {
-        assert!(mwm.clone().unwrap() > length);
-        assert!(mwm.clone().unwrap() > max_elem);
+        assert!(mwm.clone().unwrap() > l);
+        assert!(mwm.clone().unwrap() > maxm);
     }
+
+    // Calculate n = mwm if mwm is prime, else the smallest prime greater than mwm
     let mut n: Integer = if is_prime(&mwm.clone().unwrap()) { 
         mwm.clone().unwrap()
     } else { 
         mwm.clone().unwrap().next_prime() 
     };
+
+    // Make n = k * l + 1
     loop {
-        if (n.clone() - Integer::ONE).is_divisible(&length) { break; }
+        if (n.clone() - Integer::ONE).is_divisible(&l) { break; }
         n = n.next_prime();
     }
-    let k = (n.clone() - 1) / length.clone();
+    let k = (n.clone() - 1) / l.clone();
+
+    // If no primitive lth root of unity passed, calculate omg = g^k mod n
+    // where g is a generator of ℤ_n
     if omg.is_none() {
         *omg = Some(find_generator(&n).pow_mod(&k, &n).unwrap());
     } else {
-        assert!(omg.clone().unwrap().pow_mod(&length, &n).unwrap() == 1);
-        let factors = prime_factors(length.clone());
-        assert!(factors.iter().all(|x| omg.clone().unwrap().pow_mod(&(length.clone() / x), &n).unwrap() != Integer::ONE.clone()));
+        // Ensure omg^l == 1
+        assert!(omg.clone().unwrap().pow_mod(&l, &n).unwrap() == 1);
+
+        // Factorize l
+        let factors = prime_factors(l.clone());
+
+        // Ensure omg^(l/x) mod n ≢ 1 mod n ∀ x ∈ factors
+        assert!(factors.iter().all(|x| omg
+                                   .clone()
+                                   .unwrap()
+                                   .pow_mod(&(l.clone() / x), &n)
+                                   .unwrap() != Integer::ONE.clone()));
     };
+
+    // Calculate output = NTT(input), output[x] = Σ_(i = 0)^(l - 1) [input[i] * omg^(x * i)]
     let output = input
         .iter()
         .enumerate()
@@ -133,15 +200,28 @@ fn ntt(input: &[Integer], mwm: &mut Option<Integer>, omg: &mut Option<Integer>, 
                             .iter()
                             .enumerate()
                             .fold(Integer::ZERO, |sum, (inner, element)| 
-                                  sum + mg_reduce(&n, element, &omg.clone().unwrap().pow((outer * inner) as u32)))))
-        .collect();
+                                  sum + mg_reduce(&n, element, &omg.clone()
+                                                  .unwrap()
+                                                  .pow((outer * inner) as u32))))).collect();
+
+    // Return the forward transform if inverse flag is not passed
     if !inverse { return (output, n, omg.clone().unwrap()); }
-    (output.iter().map(|x| mg_reduce(&n, x, &Integer::from(output.len()).invert(&n).unwrap())).collect(), n, omg.clone().unwrap())
+
+    // Return the inverse transform if inverse flag is passed, output[x] = output[x] * l^(-1) (mod n)
+    (output
+     .iter()
+     .map(|x| mg_reduce(&n, x, &l.clone().invert(&n).unwrap()))
+     .collect(), n, omg.clone().unwrap())
 }
 
+// Perform a circular convolution on two vectors x, y i.e. NTT^(-1)[NTT(x) . NTT(y)]
+// where '.' is the Hadamard product of two vectors, NTT^(-1) is the inverse transform
 fn circular_convolution(vec_x: &[Integer], vec_y: &[Integer]) -> (Vec<Integer>, Integer, Integer) {
+    // Ensure the vectors are of the same length
     assert_eq!(vec_x.len(), vec_y.len());
-    let max_ele = 
+
+    // Find the maximum element across vec_x and vec_y
+    let max = 
             vec_x
             .iter()
             .chain(vec_y.iter())
@@ -151,18 +231,29 @@ fn circular_convolution(vec_x: &[Integer], vec_y: &[Integer]) -> (Vec<Integer>, 
             .cloned()
             .max()
             .unwrap();
-    let mut mwm = Some(max_ele.pow(2) * vec_x.len() + 1);
+
+    // Compute minimum working modulus as max^2 * vec_x.len() + 1 to avoid overflow
+    let mut mwm = Some(max.pow(2) * vec_x.len() + 1);
+
+    // Compute NTT(x), NTT(y)
     let (ntt_x, nx, omg) = ntt(vec_x, &mut mwm, &mut None, false);
     let (ntt_y, ny, _) = ntt(vec_y, &mut mwm, &mut Some(omg.clone()), false);
+
     println!("NTT(X): {ntt_x:?}");
     println!("NTT(Y): {ntt_y:?}");
+
+    // Ensure modulus is identical across NTT(x) and NTT(y), given identical mwm
     assert_eq!(nx, ny);
+
+    // Perform a Hadamard product on NTT(x) and NTT(y) reduced modulo nx
     let ntt_mult: Vec<Integer>= ntt_x
         .iter()
         .zip(ntt_y.iter())
         .map(|(x, y)| mg_reduce(&nx, x, y))
         .collect();
     println!("NTT(X) ∘ NTT(Y): {ntt_mult:?}");
+
+    // Return NTT^(-1)(ntt_mult) as the circular convolution
     ntt(&ntt_mult, &mut mwm, &mut Some(omg.clone()), true)
 }
 
@@ -170,9 +261,9 @@ fn main() {
     println!("\nNumber-theoretic transform...\n");
     print!("Enter length of vector: ");
     io::stdout().flush().unwrap();
-    let length: usize = read_input().trim().parse().unwrap();
+    let l: usize = read_input().trim().parse().unwrap();
     println!("Enter vector elements: ");
-    let mut input: Vec<Integer> = vec![Integer::ZERO; length];
+    let mut input: Vec<Integer> = vec![Integer::ZERO; l];
     input
         .iter_mut()
         .for_each(|x| *x = Integer::from_str_radix(&read_input(), 10).unwrap());
@@ -184,7 +275,7 @@ fn main() {
     } else { 
         Some(Integer::from_str_radix(&readinput, 10).unwrap()) 
     };
-    print!("Enter nth root of unity? Leave blank to skip... ");
+    print!("Enter {}th root of unity? Leave blank to skip... ", input.len());
     io::stdout().flush().unwrap();
     let readinput = read_input();
     let mut omg = if readinput.trim().is_empty() { 
@@ -195,22 +286,22 @@ fn main() {
     let (forward_ntt, n1, omg1) = ntt(&input, &mut mwm, &mut omg, false);
     let (inverse_ntt, n2, omg2) = ntt(&input, &mut mwm, &mut Some(omg1.clone()), true);
     assert_eq!(n1, n2);
-    println!("Forward NTT: {forward_ntt:?}, modulus: {n1}, nth root of unity: {omg1}");
-    println!("Inverse NTT: {inverse_ntt:?}, modulus: {n2}, nth root of unity: {omg2}");
+    println!("Forward NTT: {forward_ntt:?}, modulus: {n1}, {}th root of unity: {omg1}", input.len());
+    println!("Inverse NTT: {inverse_ntt:?}, modulus: {n2}, {}th root of unity: {omg2}", input.len());
     println!("\nCircular convolution...\n");
     print!("Enter length of the vectors: ");
     io::stdout().flush().unwrap();
-    let length: usize = read_input().trim().parse().unwrap();
+    let l: usize = read_input().trim().parse().unwrap();
     println!("Enter vector elements: ");
-    let mut vec_x: Vec<Integer> = vec![Integer::ZERO; length];
+    let mut vec_x: Vec<Integer> = vec![Integer::ZERO; l];
     vec_x
         .iter_mut()
         .for_each(|x| *x = Integer::from_str_radix(&read_input(), 10).unwrap());
     println!("Enter vector elements: ");
-    let mut vec_y: Vec<Integer> = vec![Integer::ZERO; length];
+    let mut vec_y: Vec<Integer> = vec![Integer::ZERO; l];
     vec_y
         .iter_mut()
         .for_each(|x| *x = Integer::from_str_radix(&read_input(), 10).unwrap());
     let (circ_conv, n, omg) = circular_convolution(&vec_x, &vec_y);
-    println!("Circular convolution: {circ_conv:?}, modulus: {n}, nth root of unity: {omg}");
+    println!("Circular convolution = NTT^(-1)[NTT(X) ∘ NTT(Y)]: {circ_conv:?}, modulus: {n}, {}th root of unity: {omg}", circ_conv.len());
 }
