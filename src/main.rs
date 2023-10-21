@@ -31,6 +31,7 @@ fn is_prime(n: &Integer) -> bool {
 
 // Read input from stdin
 fn read_input() -> String {
+    io::stdout().flush().unwrap();
     let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
@@ -139,9 +140,9 @@ fn mg_reduce(n: &Integer, a: &Integer, b: &Integer) -> Integer {
     br_reduce(n, &(u * r_inv))
 }
 
-// Compute the forward/inverse number-theoretic transform of a given vector naively
-fn naive_ntt(input: &[Integer], mwm: &mut Option<Integer>, omg: &mut Option<Integer>, inverse: bool) -> (Vec<Integer>, Integer, Integer) {
-    let l = Integer::from(input.len());
+// Find nearest prime modulus p for s-length vector such that s | p - 1 
+fn find_modulus(input: &[Integer], mwm: &mut Option<Integer>) -> Integer {
+    let s = Integer::from(input.len());
 
     // Find maximum element in input
     let max: Integer =  input
@@ -150,46 +151,45 @@ fn naive_ntt(input: &[Integer], mwm: &mut Option<Integer>, omg: &mut Option<Inte
         .max()
         .unwrap();
 
-    // If no minimum working modulus passed, calculate mwm > max, mwm > l
-    if mwm.is_none() { 
-        *mwm = Some(std::cmp::max(max + 1, l.clone() + 1)); 
-    } else {
-        assert!(mwm.clone().unwrap() > l);
-        assert!(mwm.clone().unwrap() > max);
+    // Calculate minimum working modulus mwm > max, mwm > l
+    if mwm.is_none() {
+        *mwm = Some(std::cmp::max(max + 1, s.clone() + 1)); 
     }
 
-    // Calculate n = mwm if mwm is prime, else the smallest prime greater than mwm
-    let mut n: Integer = if is_prime(&mwm.clone().unwrap()) { 
+    // Calculate p = mwm if mwm is prime, else the smallest prime greater than mwm
+    let mut p: Integer = if is_prime(&mwm.clone().unwrap()) { 
         mwm.clone().unwrap()
     } else { 
         mwm.clone().unwrap().next_prime() 
     };
 
-    // Make n = k * l + 1
+    // Make p = k * s + 1
     loop {
-        if (n.clone() - Integer::ONE).is_divisible(&l) { break; }
-        n = n.next_prime();
+        if (Integer::from(p.clone() - 1)).is_divisible(&s) { break; }
+        p = p.next_prime();
     }
-    let k = (n.clone() - 1) / l.clone();
 
-    // If no primitive lth root of unity passed, calculate omg = g^k mod n
-    // where g is a generator of ℤ_n
-    if omg.is_none() {
-        *omg = Some(find_generator(&n).pow_mod(&k, &n).unwrap());
-    } else {
-        // Ensure omg^l == 1
-        assert!(omg.clone().unwrap().pow_mod(&l, &n).unwrap() == 1);
+    p
+}
 
-        // Factorize l
-        let factors = prime_factors(l.clone());
+// Compute the forward/inverse number-theoretic transform of a given vector naively
+fn naive_ntt(input: &[Integer], n: &Integer, omg: &Integer, inverse: bool) -> Vec<Integer> {
+    let s = Integer::from(input.len());
 
-        // Ensure omg^(l/x) mod n ≢ 1 mod n ∀ x ∈ factors
-        assert!(factors.iter().all(|x| omg
+    // Ensure the s-th primitive root of unity omg = g^k mod n, 
+    // where g is a generator of ℤ_n, is valid
+    
+    // Ensure omg^s == 1
+    assert!(omg.clone().pow_mod(&s, n).unwrap() == 1);
+    
+    // Factorize s
+    let factors = prime_factors(s.clone());
+
+    // Ensure omg^(s/x) mod n ≢ 1 mod n ∀ x ∈ factors
+    assert!(factors.iter().all(|x| omg
                                    .clone()
-                                   .unwrap()
-                                   .pow_mod(&(l.clone() / x), &n)
+                                   .pow_mod(&(s.clone() / x), n)
                                    .unwrap() != Integer::ONE.clone()));
-    };
 
     // Calculate output = NTT(input), where 
     // output[x] = Σ_(i = 0)^(l - 1) [input[i] * omg^(x * i)] (mod n)
@@ -197,25 +197,24 @@ fn naive_ntt(input: &[Integer], mwm: &mut Option<Integer>, omg: &mut Option<Inte
         .iter()
         .enumerate()
         .map(|(outer, _)| 
-             br_reduce(&n, &input
+             br_reduce(n, &input
                        .iter()
                        .enumerate()
                        .fold(Integer::ZERO, |sum, (inner, element)| 
-                             sum + mg_reduce(&n, element, &omg.clone()
-                                             .unwrap()
+                             sum + mg_reduce(n, element, &omg.clone()
                                              .pow((outer * inner) as u32))))).collect();
 
     // Return the forward transform if inverse flag is not passed
-    if !inverse { return (output, n, omg.clone().unwrap()); }
+    if !inverse { return output; }
 
     // Return the inverse transform if inverse flag is passed, output[x] = output[x] * l^(-1) (mod n)
-    (output
+    output
      .iter()
-     .map(|x| mg_reduce(&n, x, &l.clone().invert(&n).unwrap()))
-     .collect(), n, omg.clone().unwrap())
+     .map(|x| mg_reduce(n, x, &s.clone().invert(n).unwrap()))
+     .collect()
 }
 
-// Compute the forward transform of a given vector via Cooley-Tukey butterfly interleaving
+// Compute the forward transform of a given (2^n)-length vector ∀ n ∈ ℕ via Cooley-Tukey butterfly interleaving
 fn ctntt(input: &mut Vec<Integer>, n: &Integer, omg: &Integer) {
     let len = input.len();
 
@@ -230,21 +229,21 @@ fn ctntt(input: &mut Vec<Integer>, n: &Integer, omg: &Integer) {
                               .map(|chunk| (chunk[0].clone(), chunk[1].clone()))
                               .unzip();
 
-
     // Recursively compute the NTT of the even and odd parts,
     // updating the root of unity at each layer
     ctntt(&mut even, n, &mg_reduce(n, omg, omg));
     ctntt(&mut odd, n, &mg_reduce(n, omg, omg));
 
-    // Initial exponent for root of unity is 0
+    // Initial exponent for root of unity is 0, so ω^0 = 1
     let mut w = Integer::from(1);
 
     // Alternate recombination method
     if false {
         for i in 0..len / 2 {
-            let t = mg_reduce(n, &w, &odd[i]);
-            input[i] = br_reduce(n, &(even[i].clone() + t.clone()));
-            input[i + len / 2] = br_reduce(n, &(even[i].clone() - t.clone()));
+            let u = even[i].clone();
+            let v = mg_reduce(n, &w, &odd[i]);
+            input[i] = br_reduce(n, &(u.clone() + v.clone()));
+            input[i + len / 2] = br_reduce(n, &(u.clone() - v.clone()));
             w = mg_reduce(n, &w, omg);
         }
     }
@@ -257,23 +256,74 @@ fn ctntt(input: &mut Vec<Integer>, n: &Integer, omg: &Integer) {
         .iter()
         .zip(odd.iter())
         .enumerate()
-        .for_each(|(i, (e, o))| {
-            let t = mg_reduce(n, &w, o);
+        .for_each(|(i, (ak, bk))| {
+            let u = ak.clone();
+            let v = mg_reduce(n, &w, bk);
+            input[i] = br_reduce(n, &(u.clone() + v.clone()));
+            input[i + len / 2] = br_reduce(n, &(u.clone() - v.clone()));
             w = mg_reduce(n, &w, omg);
-
-            *input.get_mut(i).unwrap() = br_reduce(n, &(e.clone() + t.clone()));
-            *input.get_mut(i + len / 2).unwrap() = br_reduce(n, &(e.clone() - t.clone()));
         });
 }
 
-// Compute the inverse transform of a given vector via Gentleman-Sande butterfly interleaving
-fn _gsintt(_input: &mut [Integer], _n: &Integer, _omg: &Integer, _omg_inv: &Integer) {
-    todo!()
+// Compute the inverse transform of a given (2^n)-length vector ∀ n ∈ ℕ via Gentleman-Sande butterfly interleaving
+fn gsintt(input: &mut [Integer], n: &Integer, omg_inv: &Integer) {
+    let len = input.len();
+
+    // Base case
+    if len <= 1 {
+        return;
+    }
+
+    // Initial exponent for root of unity is 0, so ω^0 = 1
+    let mut w = Integer::from(1);
+
+    // Alternate recombination method
+    if false {
+        for i in 0..len / 2 {
+            let u = input[i].clone();
+            let v = input[i + len / 2].clone();
+            input[i] = br_reduce(n, &(u.clone() + v.clone()));
+            let t = br_reduce(n, &(u.clone() - v.clone()));
+            input[i + len / 2] = mg_reduce(n, &w, &t);
+            w = mg_reduce(n, &w, omg_inv);
+        }
+    }
+
+    // Partition the vector at the middle
+    let (first, second) = input.split_at_mut(len / 2);
+
+    // Combine using standard GS butterflies:
+    // input[k] = A[k] + B[k] (mod n)
+    // input[k + len / 2] = ω^(-k) (A[k] - B[k]) (mod n)
+    // where A[k] = first_half, B[k] = second_half
+    first
+        .iter_mut()
+        .zip(second.iter_mut())
+        .for_each(|(a, b)| {
+            let u = a.clone();
+            let v = b.clone();
+
+            *a = br_reduce(n, &(u.clone() + v.clone()));
+
+            let t = br_reduce(n, &(u - v));
+            *b = mg_reduce(n, &w, &t);
+
+            w = mg_reduce(n, &w, omg_inv);
+    });
+
+    // Partition the butterfly-operated vector at the middle
+    let (first, second) = input.split_at_mut(len / 2);
+
+    // Recursively compute the INTT of the first and second halves,
+    // updating the inverse of the root of unity at each layer
+    gsintt(first, n, &mg_reduce(n, omg_inv, omg_inv));
+    gsintt(second, n, &mg_reduce(n, omg_inv, omg_inv));
+
 }
 
 // Perform a circular convolution on two vectors x, y i.e. NTT^(-1)[NTT(x) . NTT(y)]
 // where '.' is the Hadamard product of two vectors, NTT^(-1) is the inverse transform
-fn circular_convolution(vec_x: &[Integer], vec_y: &[Integer]) -> (Vec<Integer>, Integer, Integer) {
+fn circular_convolution(vec_x: &[Integer], vec_y: &[Integer]) -> Vec<Integer> {
     // Ensure the vectors are of the same length
     assert_eq!(vec_x.len(), vec_y.len());
 
@@ -289,36 +339,57 @@ fn circular_convolution(vec_x: &[Integer], vec_y: &[Integer]) -> (Vec<Integer>, 
         .max()
         .unwrap();
 
-    // Compute minimum working modulus as max^2 * vec_x.len() + 1 to avoid overflow
-    let mut mwm = Some(max.pow(2) * vec_x.len() + 1);
+    // Find modulus
+    let n = find_modulus(vec_x, &mut Some(max.clone() * max * vec_x.len() + 1));
+
+    // Calculate root of unity
+    let omg = find_generator(&n).pow_mod(&((n.clone() - 1) / Integer::from(vec_x.len())), &n).unwrap();
 
     // Compute NTT(x), NTT(y)
-    let (ntt_x, nx, omg) = naive_ntt(vec_x, &mut mwm, &mut None, false);
-    let (ntt_y, ny, _) = naive_ntt(vec_y, &mut mwm, &mut Some(omg.clone()), false);
+    let mut ntt_x: Vec<Integer>;
+    let mut ntt_y: Vec<Integer>;
 
-    println!("NTT(X): {ntt_x:?}");
+    // If the vector length is a power of two, calculate the forward transforms using
+    // CT butterfly interleaving
+    if (vec_x.len() & (vec_x.len() - 1)) == 0 {
+        println!("\nUsing Cooley-Tukey butterfly interleaving...");
+        ntt_x = vec_x.clone().to_vec();
+        ntt_y = vec_y.clone().to_vec();
+        ctntt(&mut ntt_x, &n, &omg);
+        ctntt(&mut ntt_y, &n, &omg);
+    } else {
+        ntt_x = naive_ntt(vec_x, &n, &omg, false);
+        ntt_y = naive_ntt(vec_y, &n, &omg, false);
+    }
+
+    println!("\nNTT(X): {ntt_x:?}");
     println!("NTT(Y): {ntt_y:?}");
 
-    // Ensure modulus is identical across NTT(x) and NTT(y), given identical mwm
-    assert_eq!(nx, ny);
-
     // Perform a Hadamard product on NTT(x) and NTT(y) reduced modulo nx
-    let ntt_mult: Vec<Integer>= ntt_x
+    let mut ntt_mult: Vec<Integer>= ntt_x
         .iter()
         .zip(ntt_y.iter())
-        .map(|(x, y)| mg_reduce(&nx, x, y))
+        .map(|(x, y)| mg_reduce(&n, x, y))
         .collect();
     println!("NTT(X) ∘ NTT(Y): {ntt_mult:?}");
 
     // Return NTT^(-1)(ntt_mult) as the circular convolution
-    naive_ntt(&ntt_mult, &mut mwm, &mut Some(omg.clone()), true)
+    if (ntt_mult.len() & (ntt_mult.len() - 1)) == 0 {
+        println!("\nUsing Gentleman-Sande butterfly interleaving...");
+        gsintt(&mut ntt_mult, &n, &omg);
+
+        // Scale result by modular inverse of vector length
+        ntt_mult.iter_mut().for_each(|x| *x = mg_reduce(&n, &Integer::from(vec_x.len()).invert(&n).unwrap(), x));
+        return ntt_mult;
+    }
+
+    naive_ntt(&ntt_mult, &n, &omg, true)
 }
 
 fn main() {
     println!("\nNumber-theoretic transform...\n");
 
     print!("Enter length of vector: ");
-    io::stdout().flush().unwrap();
     let l: usize = read_input().trim().parse().unwrap();
 
     println!("Enter vector elements: ");
@@ -327,37 +398,47 @@ fn main() {
         .iter_mut()
         .for_each(|x| *x = Integer::from_str_radix(&read_input(), 10).unwrap());
 
-    print!("Enter minimum working modulus? Leave blank to skip... ");
-    io::stdout().flush().unwrap();
+    print!("Enter modulus? Leave blank to skip... ");
     let readinput = read_input();
-    let mut mwm = if readinput.trim().is_empty() { 
-        None 
+    let n = if readinput.trim().is_empty() { 
+        find_modulus(&input, &mut None)
     } else { 
-        Some(Integer::from_str_radix(&readinput, 10).unwrap()) 
+        Integer::from_str_radix(&readinput, 10).unwrap()
     };
 
     print!("Enter {}th root of unity? Leave blank to skip... ", input.len());
-    io::stdout().flush().unwrap();
     let readinput = read_input();
-    let mut omg = if readinput.trim().is_empty() { 
-        None 
+    let omg = if readinput.trim().is_empty() { 
+        // calculate l-th root of unity
+        // omg = g^k mod n where g is a generator of ℤ_n
+        find_generator(&n).pow_mod(&((n.clone() - 1) / Integer::from(l)), &n).unwrap()
     } else { 
-        Some(Integer::from_str_radix(&readinput, 10).unwrap()) 
+        Integer::from_str_radix(&readinput, 10).unwrap()
     };
 
     // Calculate the forward/inverse transforms of the vector using the naive method
-    let (forward_ntt, n1, omg1) = naive_ntt(&input, &mut mwm, &mut omg, false);
-    let (inverse_ntt, n2, omg2) = naive_ntt(&input, &mut mwm, &mut Some(omg1.clone()), true);
+    let mut forward_ntt = naive_ntt(&input, &n, &omg, false);
+    let mut inverse_ntt = naive_ntt(&input, &n, &omg, true);
 
-    // If the vector length is a power of two, calculate the forward transform using
-    // CT butterfly interleaving to verify correctness
-    if (input.len() & (input.len() - 1)) == 0 { ctntt(&mut input, &n1, &omg1); }
-    assert!(forward_ntt == input);
+    // If the vector length is a power of two, calculate the forward+inverse transform using
+    // CT/GS butterfly interleaving to verify correctness
+    if (input.len() & (input.len() - 1)) == 0 { 
+        let mut fwd = input.clone();
 
-    println!("Forward NTT: {forward_ntt:?}, modulus: {n1}, {}th root of unity: {omg1}", input.len());
-    println!("Inverse NTT: {inverse_ntt:?}, modulus: {n2}, {}th root of unity: {omg2}", input.len());
+        ctntt(&mut fwd, &n, &omg);
+        assert!(forward_ntt.sort() == fwd.sort());
 
-    println!("\nCooley-Tukey butterfly interleaving verified.");
+        gsintt(&mut input, &n, &omg.clone().invert(&n).unwrap());
+
+        // Scale by modular inverse of vector length
+        input.iter_mut().for_each(|x| *x = mg_reduce(&n, &Integer::from(fwd.len()).invert(&n).unwrap(), x));
+
+        assert!(inverse_ntt.sort() == input.sort());
+
+        println!("\nCooley-Tukey/Gentleman-Sande butterfly interleaving verified.");
+    }
+
+    println!("\nForward NTT: {forward_ntt:?}, Invere NTT: {inverse_ntt:?}, modulus: {n}, {}th root of unity: {omg}", input.len());
 
     println!("\nCircular convolution...\n");
     print!("Enter length of the vectors: ");
@@ -376,6 +457,6 @@ fn main() {
         .iter_mut()
         .for_each(|x| *x = Integer::from_str_radix(&read_input(), 10).unwrap());
 
-    let (circ_conv, n, omg) = circular_convolution(&vec_x, &vec_y);
-    println!("Circular convolution = NTT^(-1)[NTT(X) ∘ NTT(Y)]: {circ_conv:?}, modulus: {n}, {}th root of unity: {omg}", circ_conv.len());
+    let circ_conv = circular_convolution(&vec_x, &vec_y);
+    println!("\nCircular convolution = NTT^(-1)[NTT(X) ∘ NTT(Y)]: {circ_conv:?}");
 }
