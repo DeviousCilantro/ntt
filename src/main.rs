@@ -178,18 +178,18 @@ fn naive_ntt(input: &[Integer], n: &Integer, omg: &Integer, inverse: bool) -> Ve
 
     // Ensure the s-th primitive root of unity omg = g^k mod n, 
     // where g is a generator of ℤ_n, is valid
-    
+
     // Ensure omg^s == 1
     assert!(omg.clone().pow_mod(&s, n).unwrap() == 1);
-    
+
     // Factorize s
     let factors = prime_factors(s.clone());
 
     // Ensure omg^(s/x) mod n ≢ 1 mod n ∀ x ∈ factors
     assert!(factors.iter().all(|x| omg
-                                   .clone()
-                                   .pow_mod(&(s.clone() / x), n)
-                                   .unwrap() != Integer::ONE.clone()));
+                               .clone()
+                               .pow_mod(&(s.clone() / x), n)
+                               .unwrap() != Integer::ONE.clone()));
 
     // Calculate output = NTT(input), where 
     // output[x] = Σ_(i = 0)^(l - 1) [input[i] * omg^(x * i)] (mod n)
@@ -209,9 +209,9 @@ fn naive_ntt(input: &[Integer], n: &Integer, omg: &Integer, inverse: bool) -> Ve
 
     // Return the inverse transform if inverse flag is passed, output[x] = output[x] * l^(-1) (mod n)
     output
-     .iter()
-     .map(|x| mg_reduce(n, x, &s.clone().invert(n).unwrap()))
-     .collect()
+        .iter()
+        .map(|x| mg_reduce(n, x, &s.clone().invert(n).unwrap()))
+        .collect()
 }
 
 fn compute_powers_of_psi(n: usize, psi: &Integer, q: &Integer) -> Vec<Integer> {
@@ -234,7 +234,7 @@ fn bit_reverse_order(vec: Vec<Integer>, n: usize) -> Vec<Integer> {
             let rev_i = i.reverse_bits() >> (32 - log_n);
             (rev_i, x)
         })
-        .collect();
+    .collect();
 
     pairs.sort_by_key(|&(i, _)| i);
     pairs.into_iter().map(|(_, x)| x).collect()
@@ -297,34 +297,34 @@ fn iterative_gsintt(x: &mut Vec<Integer>, g_inv: &Vec<Integer>, q: &Integer, n_i
 }
 
 /*
-fn iterative_ctntt(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer) {
-    let n = x.len();
-    let mut t = n / 2;
-    let mut m = 1;
+   fn iterative_ctntt(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer) {
+   let n = x.len();
+   let mut t = n / 2;
+   let mut m = 1;
 
-    while m < n {
-        let mut k = 0;
-        for i in 0..m {
-            let s = &g[m + i];
+   while m < n {
+   let mut k = 0;
+   for i in 0..m {
+   let s = &g[m + i];
 
-            for j in k..(k + t) {
-                let u = x[j].clone();
-                let v = mg_reduce(&q, &x[j + t], &s);
+   for j in k..(k + t) {
+   let u = x[j].clone();
+   let v = mg_reduce(&q, &x[j + t], &s);
 
-                println!("u: {}, v: {}", u, v);
+   println!("u: {}, v: {}", u, v);
 
-                x[j] = br_reduce(q, &(u.clone() + v.clone()));
-                println!("x[j] = {}", x[j]);
-                x[j + t] = br_reduce(q, &(u - v));
-                println!("x[j + t] = {}", x[j + t]);
-            }
+   x[j] = br_reduce(q, &(u.clone() + v.clone()));
+   println!("x[j] = {}", x[j]);
+   x[j + t] = br_reduce(q, &(u - v));
+   println!("x[j + t] = {}", x[j + t]);
+   }
 
-            k += (2 * t);
-        }
-        t /= 2;
-        m *= 2;
-    }
-}*/
+   k += (2 * t);
+   }
+   t /= 2;
+   m *= 2;
+   }
+   }*/
 
 
 // Compute the forward transform of a given (2^n)-length vector ∀ n ∈ ℕ via Cooley-Tukey butterfly interleaving
@@ -365,9 +365,9 @@ fn recursive_ctntt(input: &mut Vec<Integer>, n: &Integer, omg: &Integer) {
 
 
     /*println!("Before recombination: {input:?}");
-    println!("Before recombination (even): {even:?}");
-    println!("Before recombination (odd): {odd:?}");
-    println!("Root of unity: {omg}");*/
+      println!("Before recombination (even): {even:?}");
+      println!("Before recombination (odd): {odd:?}");
+      println!("Root of unity: {omg}");*/
 
     // Recombine the NTT output using standard CT butterflies:
     // output[k] = A[k] + ω^k B[k] (mod n)
@@ -437,7 +437,7 @@ fn recursive_gsintt(input: &mut [Integer], n: &Integer, omg_inv: &Integer) {
             *b = mg_reduce(n, &w, &t);
 
             w = mg_reduce(n, &w, omg_inv);
-    });
+        });
 
     // Partition the butterfly-operated vector at the middle
     let (first, second) = input.split_at_mut(len / 2);
@@ -447,6 +447,38 @@ fn recursive_gsintt(input: &mut [Integer], n: &Integer, omg_inv: &Integer) {
     recursive_gsintt(first, n, &mg_reduce(n, omg_inv, omg_inv));
     recursive_gsintt(second, n, &mg_reduce(n, omg_inv, omg_inv));
 
+}
+
+// Naive polynomial multiplication
+fn polynomial_multiply(a: &[Integer], b: &[Integer], modulus: &Integer, n: usize, nega: bool) -> Vec<Integer> {
+    let mut result = vec![Integer::from(0); 2 * n - 1];
+
+    // Polynomial multiplication
+    for i in 0..n {
+        for j in 0..n {
+            result[i + j] += &a[i] * &b[j];
+        }
+    }
+
+    // Modulo reduction for each coefficient
+    for i in 0..2 * n - 1 {
+        result[i] %= modulus;
+    }
+
+    // Reduction by x^n + 1 / x^n - 1
+    if nega {
+        for i in n..2 * n - 1 {
+            result[i - n] = br_reduce(&modulus, &Integer::from(&result[i - n] - &result[i]));
+        }
+    }
+    else {
+        for i in n..2 * n - 1 {
+            result[i - n] = br_reduce(&modulus, &Integer::from(&result[i - n] + &result[i]));
+        }
+    }
+
+    result.truncate(n);
+    result
 }
 
 // Perform a circular convolution on two vectors x, y i.e. NTT^(-1)[NTT(x) . NTT(y)]
@@ -488,7 +520,7 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
     let mut ntt_y: Vec<Integer>;
 
     if circular {
-        println!("Computing circular convolution...")
+        println!("Computing circular convolution...");
         // If the vector length is a power of two, calculate the forward transforms using
         // CT butterfly interleaving
         if (vec_x.len() & (vec_x.len() - 1)) == 0 {
@@ -520,13 +552,15 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
 
             // Scale result by modular inverse of vector length
             ntt_mult.iter_mut().for_each(|x| *x = mg_reduce(&n, &Integer::from(vec_x.len()).invert(&n).unwrap(), x));
+
+            assert_eq!(ntt_mult.sort(), polynomial_multiply(&vec_x, &vec_y, &n, vec_x.len(), false).sort());
             return ntt_mult;
         }
 
         return naive_ntt(&ntt_mult, &n, &omg, true);
     }
 
-    println!("Computing negacyclic convolution...")
+    println!("Computing negacyclic convolution...");
 
     ntt_x = vec_x.clone().to_vec();
     ntt_y = vec_y.clone().to_vec();
@@ -538,15 +572,17 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
     println!("NTT(Y): {ntt_y:?}");
 
     let mut ntt_mult: Vec<Integer>= ntt_x
-            .iter()
-            .zip(ntt_y.iter())
-            .map(|(x, y)| mg_reduce(&n, x, y))
-            .collect();
+        .iter()
+        .zip(ntt_y.iter())
+        .map(|(x, y)| mg_reduce(&n, x, y))
+        .collect();
 
     println!("NTT(X) ∘ NTT(Y): {ntt_mult:?}");
-    
+
     // Return NTT^(-1)(ntt_mult) as the negacyclic convolution
     iterative_gsintt(&mut ntt_mult, &compute_inverses(&psi_rev, &n), &n, &Integer::from(vec_x.len()).invert(&n).unwrap());
+
+    assert_eq!(ntt_mult, polynomial_multiply(&vec_x, &vec_y, &n, vec_x.len(), true));
 
     ntt_mult
 }
@@ -657,9 +693,9 @@ fn main() {
 
     if choice == 'c' {
         let conv = convolution(&vec_x, &vec_y, true);
-        println!("\nCircular convolution = NTT^(-1)[NTT(X) ∘ NTT(Y)]: {circ_conv:?}");
+        println!("\nCircular convolution = NTT^(-1)[NTT(X) ∘ NTT(Y)]: {conv:?}");
     } else {
         let conv = convolution(&vec_x, &vec_y, false);
-        println!("\nNegacyclic convolution = NTT^(-1)[NTT(X) ∘ NTT(Y)]: {circ_conv:?}");
+        println!("\nNegacyclic convolution = NTT^(-1)[NTT(X) ∘ NTT(Y)]: {conv:?}");
     }
 }
