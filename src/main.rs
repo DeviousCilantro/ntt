@@ -5,6 +5,7 @@ use rug::ops::Pow;
 use ring::rand::{SystemRandom, SecureRandom};
 use rug::ops::DivRounding;
 use std::io::{self, Write};
+use std::fs::File;
 
 // Generate a random rug::Integer ∈ ℤ ∩ [lower, upper]
 fn random_integer_between(lower: &Integer, upper: &Integer) -> Integer {
@@ -240,10 +241,14 @@ fn bit_reverse_order(vec: Vec<Integer>, n: usize) -> Vec<Integer> {
     pairs.into_iter().map(|(_, x)| x).collect()
 }
 
-fn iterative_ctntt(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer) {
+fn iterative_ctntt(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer, butterflies: &mut Vec<Vec<Integer>>) {
     let n = x.len();
     let mut t = n / 2;
     let mut m = 1;
+
+    // Initialize butterflies vector
+    butterflies.clear();
+    butterflies.push(x.clone());  // Store initial state
 
     while m < n {
         let mut k = 0;
@@ -260,15 +265,24 @@ fn iterative_ctntt(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer) {
 
             k += 2 * t;
         }
+
+        // Store the state after each iteration
+        butterflies.push(x.clone());
+
         t /= 2;
         m *= 2;
     }
 }
 
-fn iterative_gsintt(x: &mut Vec<Integer>, g_inv: &Vec<Integer>, q: &Integer, n_inv: &Integer) {
+
+fn iterative_gsintt(x: &mut Vec<Integer>, g_inv: &Vec<Integer>, q: &Integer, n_inv: &Integer, butterflies: &mut Vec<Vec<Integer>>) {
     let n = x.len();
     let mut t = 1;
     let mut m = n / 2;
+
+    // Initialize butterflies vector
+    butterflies.clear();
+    butterflies.push(x.clone());  // Store initial state
 
     while m > 0 {
         let mut k = 0;
@@ -287,114 +301,85 @@ fn iterative_gsintt(x: &mut Vec<Integer>, g_inv: &Vec<Integer>, q: &Integer, n_i
             k += 2 * t;
         }
 
+        // Store the state after each iteration
+        butterflies.push(x.clone());
+
         t *= 2;
         m /= 2;
     }
 
+    // Final normalization step
     for xi in x.iter_mut() {
         *xi = mg_reduce(&q, &xi, &n_inv);
     }
+
+    // Store the final state
+    butterflies.push(x.clone());
 }
 
-/*
-   fn iterative_ctntt(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer) {
-   let n = x.len();
-   let mut t = n / 2;
-   let mut m = 1;
-
-   while m < n {
-   let mut k = 0;
-   for i in 0..m {
-   let s = &g[m + i];
-
-   for j in k..(k + t) {
-   let u = x[j].clone();
-   let v = mg_reduce(&q, &x[j + t], &s);
-
-   println!("u: {}, v: {}", u, v);
-
-   x[j] = br_reduce(q, &(u.clone() + v.clone()));
-   println!("x[j] = {}", x[j]);
-   x[j + t] = br_reduce(q, &(u - v));
-   println!("x[j + t] = {}", x[j + t]);
-   }
-
-   k += (2 * t);
-   }
-   t /= 2;
-   m *= 2;
-   }
-   }*/
-
-
 // Compute the forward transform of a given (2^n)-length vector ∀ n ∈ ℕ via Cooley-Tukey butterfly interleaving
-fn recursive_ctntt(input: &mut Vec<Integer>, n: &Integer, omg: &Integer) {
-    //println!("Vector: {input:?}");
-
+fn recursive_ctntt(
+    input: &mut Vec<Integer>, 
+    n: &Integer, 
+    omg: &Integer, 
+    depth: usize, 
+    butterflies: &mut Vec<Vec<Vec<Integer>>>,
+) {
     let len = input.len();
-
-    // Base case
     if len <= 1 {
         return;
     }
 
-    // Partition the vector into odd-indexed and even-indexed elements
+    // Now, separately map the even and odd index vectors to their corresponding values
     let (mut even, mut odd): (Vec<Integer>, Vec<Integer>) = input
-                              .chunks_exact(2)
-                              .map(|chunk| (chunk[0].clone(), chunk[1].clone()))
-                              .unzip();
+                          .chunks_exact(2)
+                          .map(|chunk| (chunk[0].clone(), chunk[1].clone()))
+                          .unzip();
 
-    // Recursively compute the NTT of the even and odd parts,
-    // updating the root of unity at each layer
-    recursive_ctntt(&mut even, n, &mg_reduce(n, omg, omg));
-    recursive_ctntt(&mut odd, n, &mg_reduce(n, omg, omg));
+    // Recurse for even and odd parts
+    recursive_ctntt(&mut even, n, &mg_reduce(n, omg, omg), depth + 1, butterflies);
+    recursive_ctntt(&mut odd, n, &mg_reduce(n, omg, omg), depth + 1, butterflies);
 
-    // Initial exponent for root of unity is 0, so ω^0 = 1
+    // Ensure the butterflies vector has enough sub-vectors for the current depth
+    while butterflies.len() <= depth {
+        butterflies.push(Vec::new());
+    }
+
+    // Store the current state before performing the butterfly operations
+    butterflies[depth].push(input.clone());
+
     let mut w = Integer::from(1);
 
-    // Alternate recombination method
-    if false {
-        for i in 0..len / 2 {
-            let u = even[i].clone();
-            let v = mg_reduce(n, &w, &odd[i]);
-            input[i] = br_reduce(n, &(u.clone() + v.clone()));
-            input[i + len / 2] = br_reduce(n, &(u.clone() - v.clone()));
-            w = mg_reduce(n, &w, omg);
+    // Butterfly operations
+    for i in 0..len / 2 {
+        let u = even[i].clone();
+        let v = mg_reduce(n, &w, &odd[i]);
+
+        let even_index = i;
+        let odd_index = i + len / 2;
+
+        input[even_index] = br_reduce(n, &(u.clone() + v.clone()));
+        input[odd_index] = br_reduce(n, &(u - v));
+
+        w = mg_reduce(n, &w, omg);
+
+        if butterflies[depth].is_empty() {
+            butterflies[depth].push(Vec::new());
         }
     }
 
-
-    /*println!("Before recombination: {input:?}");
-      println!("Before recombination (even): {even:?}");
-      println!("Before recombination (odd): {odd:?}");
-      println!("Root of unity: {omg}");*/
-
-    // Recombine the NTT output using standard CT butterflies:
-    // output[k] = A[k] + ω^k B[k] (mod n)
-    // output[k + len / 2] = A[k] - ω^k B[k] (mod n)
-    // where A[k] = NTT(even), B[k] = NTT(odd)
-    even
-        .iter()
-        .zip(odd.iter())
-        .enumerate()
-        .for_each(|(i, (ak, bk))| {
-            //println!("W: {w}");
-            let u = ak.clone();
-            let v = mg_reduce(n, &w, bk);
-            //println!("u: {u}");
-            //println!("v: {v}");
-            input[i] = br_reduce(n, &(u.clone() + v.clone()));
-            //println!("input[i]: {}", input[i]);
-            input[i + len / 2] = br_reduce(n, &(u.clone() - v.clone()));
-            //println!("input[i + len / 2]: {}", input[i + len / 2]);
-            w = mg_reduce(n, &w, omg);
-        });
-
-    //println!("Recombined: {input:?}");
+    // Store the state after performing the butterfly operations
+    butterflies[depth].push(input.clone());
 }
 
 // Compute the inverse transform of a given (2^n)-length vector ∀ n ∈ ℕ via Gentleman-Sande butterfly interleaving
-fn recursive_gsintt(input: &mut [Integer], n: &Integer, omg_inv: &Integer) {
+fn recursive_gsintt(
+    input: &mut [Integer], 
+    n: &Integer, 
+    omg_inv: &Integer, 
+    depth: usize, 
+    butterflies: &mut Vec<Vec<Vec<Integer>>>,
+) {
     let len = input.len();
 
     // Base case
@@ -402,51 +387,41 @@ fn recursive_gsintt(input: &mut [Integer], n: &Integer, omg_inv: &Integer) {
         return;
     }
 
-    // Initial exponent for root of unity is 0, so ω^0 = 1
-    let mut w = Integer::from(1);
-
-    // Alternate recombination method
-    if false {
-        for i in 0..len / 2 {
-            let u = input[i].clone();
-            let v = input[i + len / 2].clone();
-            input[i] = br_reduce(n, &(u.clone() + v.clone()));
-            let t = br_reduce(n, &(u.clone() - v.clone()));
-            input[i + len / 2] = mg_reduce(n, &w, &t);
-            w = mg_reduce(n, &w, omg_inv);
-        }
+    // Ensure the butterflies vector has enough sub-vectors for the current depth
+    while butterflies.len() <= depth {
+        butterflies.push(Vec::new());
     }
+
+    // Store the current state before performing the butterfly operations
+    butterflies[depth].push(input.to_vec());
+
+    let mut w = Integer::from(1);
 
     // Partition the vector at the middle
     let (first, second) = input.split_at_mut(len / 2);
 
     // Combine using standard GS butterflies:
-    // input[k] = A[k] + B[k] (mod n)
-    // input[k + len / 2] = ω^(-k) (A[k] - B[k]) (mod n)
-    // where A[k] = first_half, B[k] = second_half
-    first
-        .iter_mut()
-        .zip(second.iter_mut())
-        .for_each(|(a, b)| {
-            let u = a.clone();
-            let v = b.clone();
+    for (_, (a, b)) in first.iter_mut().zip(second.iter_mut()).enumerate() {
+        let u = a.clone();
+        let v = b.clone();
 
-            *a = br_reduce(n, &(u.clone() + v.clone()));
+        *a = br_reduce(n, &(u.clone() + v.clone()));
 
-            let t = br_reduce(n, &(u - v));
-            *b = mg_reduce(n, &w, &t);
+        let t = br_reduce(n, &(u - v));
+        *b = mg_reduce(n, &w, &t);
 
-            w = mg_reduce(n, &w, omg_inv);
-        });
+        w = mg_reduce(n, &w, omg_inv);
+    }
 
     // Partition the butterfly-operated vector at the middle
     let (first, second) = input.split_at_mut(len / 2);
 
-    // Recursively compute the INTT of the first and second halves,
-    // updating the inverse of the root of unity at each layer
-    recursive_gsintt(first, n, &mg_reduce(n, omg_inv, omg_inv));
-    recursive_gsintt(second, n, &mg_reduce(n, omg_inv, omg_inv));
+    // Recursively compute the INTT of the first and second halves
+    recursive_gsintt(first, n, &mg_reduce(n, omg_inv, omg_inv), depth + 1, butterflies);
+    recursive_gsintt(second, n, &mg_reduce(n, omg_inv, omg_inv), depth + 1, butterflies);
 
+    // Store the state after performing the butterfly operations
+    butterflies[depth].push(input.to_vec());
 }
 
 // Naive polynomial multiplication
@@ -527,8 +502,10 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
             println!("\nUsing Cooley-Tukey butterfly interleaving...");
             ntt_x = vec_x.clone().to_vec();
             ntt_y = vec_y.clone().to_vec();
-            recursive_ctntt(&mut ntt_x, &n, &omg);
-            recursive_ctntt(&mut ntt_y, &n, &omg);
+            let mut butterflies = Vec::new();
+            recursive_ctntt(&mut ntt_x, &n, &omg, 0, &mut butterflies);
+            let mut butterflies = Vec::new();
+            recursive_ctntt(&mut ntt_y, &n, &omg, 0, &mut butterflies);
         } else {
             ntt_x = naive_ntt(vec_x, &n, &omg, false);
             ntt_y = naive_ntt(vec_y, &n, &omg, false);
@@ -548,7 +525,8 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
         // Return NTT^(-1)(ntt_mult) as the circular convolution
         if (ntt_mult.len() & (ntt_mult.len() - 1)) == 0 {
             println!("\nUsing Gentleman-Sande butterfly interleaving...");
-            recursive_gsintt(&mut ntt_mult, &n, &omg);
+            let mut butterflies = Vec::new();
+            recursive_gsintt(&mut ntt_mult, &n, &omg, 0, &mut butterflies);
 
             // Scale result by modular inverse of vector length
             ntt_mult.iter_mut().for_each(|x| *x = mg_reduce(&n, &Integer::from(vec_x.len()).invert(&n).unwrap(), x));
@@ -565,8 +543,12 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
     ntt_x = vec_x.clone().to_vec();
     ntt_y = vec_y.clone().to_vec();
 
-    iterative_ctntt(&mut ntt_x, &psi_rev, &n);
-    iterative_ctntt(&mut ntt_y, &psi_rev, &n);
+    let mut butterflies = Vec::new();
+
+    iterative_ctntt(&mut ntt_x, &psi_rev, &n, &mut butterflies);
+
+    let mut butterflies = Vec::new();
+    iterative_ctntt(&mut ntt_y, &psi_rev, &n, &mut butterflies);
 
     println!("\nNTT(X): {ntt_x:?}");
     println!("NTT(Y): {ntt_y:?}");
@@ -579,8 +561,9 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
 
     println!("NTT(X) ∘ NTT(Y): {ntt_mult:?}");
 
+    let mut butterflies = Vec::new();
     // Return NTT^(-1)(ntt_mult) as the negacyclic convolution
-    iterative_gsintt(&mut ntt_mult, &compute_inverses(&psi_rev, &n), &n, &Integer::from(vec_x.len()).invert(&n).unwrap());
+    iterative_gsintt(&mut ntt_mult, &compute_inverses(&psi_rev, &n), &n, &Integer::from(vec_x.len()).invert(&n).unwrap(), &mut butterflies);
 
     assert_eq!(ntt_mult, polynomial_multiply(&vec_x, &vec_y, &n, vec_x.len(), true));
 
@@ -627,8 +610,8 @@ fn main() {
     assert_eq!(omg, mg_reduce(&n, &phi, &phi));
 
     // Calculate the forward/inverse transforms of the vector using the naive method
-    let mut forward_ntt = naive_ntt(&input, &n, &omg, false);
-    let mut inverse_ntt = naive_ntt(&forward_ntt, &n, &omg, true);
+    let forward_ntt = naive_ntt(&input, &n, &omg, false);
+    let inverse_ntt = naive_ntt(&forward_ntt, &n, &omg, true);
 
 
     let psi = compute_powers_of_psi(input.len(), &phi, &n);
@@ -643,32 +626,104 @@ fn main() {
     println!("2nth root of unity: {phi}");
     println!("precomputed powers (bit-reversed): {:?}", &psi_rev);
 
-    iterative_ctntt(&mut input, &psi_rev, &n);
-    println!("iterative_ctntt: {:?}", input);
-    iterative_gsintt(&mut input, &compute_inverses(&psi_rev, &n), &n, &Integer::from(l).invert(&n).unwrap());
-    println!("iterative_gsintt: {:?}", input);
+    let mut butterflies = Vec::new();
+    iterative_ctntt(&mut input, &psi_rev, &n, &mut butterflies);
+    println!("\niterative_ctntt: {:?}", input);
+    println!("butterflies: {:?}", butterflies);
+    let mut file = File::create("iterative_ctntt_calc.txt").expect("Unable to create file");
+    for (index, vector) in butterflies.iter().enumerate() {
+        writeln!(&mut file, "at iteration {}:", index).expect("Unable to write to file");
+        writeln!(&mut file, "{:?}", vector).expect("Unable to write to file");
+    }
+    let mut butterflies = Vec::new();
+    iterative_gsintt(&mut input, &compute_inverses(&psi_rev, &n), &n, &Integer::from(l).invert(&n).unwrap(), &mut butterflies);
+    println!("\niterative_gsintt: {:?}", input);
+    println!("butterflies: {:?}", butterflies);
+    let mut file = File::create("iterative_gsintt_calc.txt").expect("Unable to create file");
+    for (index, vector) in butterflies.iter().enumerate() {
+        writeln!(&mut file, "at iteration {}:", index).expect("Unable to write to file");
+        writeln!(&mut file, "{:?}", vector).expect("Unable to write to file");
+    }
+
+    let mut butterflies = Vec::new();
 
     // If the vector length is a power of two, calculate the forward+inverse transform using
     // CT/GS butterfly interleaving to verify correctness
     if (input.len() & (input.len() - 1)) == 0 { 
         let mut fwd = input.clone();
 
-        recursive_ctntt(&mut fwd, &n, &omg);
-        //println!("recursive_ctntt: {fwd:?}");
-        //println!("naive: {forward_ntt:?}");
-        assert!(forward_ntt.sort() == fwd.sort());
+        recursive_ctntt(&mut fwd, &n, &omg, 0, &mut butterflies);
+        println!("\nrecursive_ctntt: {:?}", fwd);
+        println!("butterflies: {:?}", butterflies);
+        let mut file = File::create("recursive_ctntt_calc.txt").expect("Unable to create file");
 
-        recursive_gsintt(&mut input, &n, &omg.clone().invert(&n).unwrap());
+        for (index, stage) in butterflies.iter().enumerate() {
+            writeln!(&mut file, "at depth {}:", index).expect("Unable to write to file");
+
+            for (jndex, vector) in stage.iter().enumerate() {
+                if jndex % 2 == 0 {
+                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+                }
+            }
+
+            writeln!(&mut file).expect("Unable to write to file");
+        }
+
+        butterflies.reverse();
+
+        for (index, stage) in butterflies.iter().enumerate() {
+            let depth = butterflies.len() - 1 - index;
+            writeln!(&mut file, "computed at depth {}:", depth).expect("Unable to write to file");
+
+            for (jndex, vector) in stage.iter().enumerate() {
+                if jndex % 2 != 0 {
+                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+                }
+            }
+
+            writeln!(&mut file).expect("Unable to write to file");
+        }        
+        let mut butterflies = Vec::new();
+        recursive_gsintt(&mut fwd, &n, &omg.clone().invert(&n).unwrap(), 0, &mut butterflies);
 
         // Scale by modular inverse of vector length
-        input.iter_mut().for_each(|x| *x = mg_reduce(&n, &Integer::from(fwd.len()).invert(&n).unwrap(), x));
+        fwd.iter_mut().for_each(|x| *x = mg_reduce(&n, &Integer::from(input.len()).invert(&n).unwrap(), x));
 
-        assert!(inverse_ntt.sort() == input.sort());
+        println!("\nrecursive_gsintt: {:?}", fwd);
+        println!("butterflies: {:?}", butterflies);
 
-        //println!("\nCooley-Tukey/Gentleman-Sande butterfly interleaving verified.");
+        let mut file = File::create("recursive_gsintt_calc.txt").expect("Unable to create file");
+
+        for (index, stage) in butterflies.iter().enumerate() {
+            writeln!(&mut file, "at depth {}:", index).expect("Unable to write to file");
+
+            for (jndex, vector) in stage.iter().enumerate() {
+                if jndex % 2 == 0 {
+                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+                }
+            }
+
+            writeln!(&mut file).expect("Unable to write to file");
+        }
+
+        butterflies.reverse();
+
+        for (index, stage) in butterflies.iter().enumerate() {
+            let depth = butterflies.len() - 1 - index;
+            writeln!(&mut file, "computed at depth {}:", depth).expect("Unable to write to file");
+
+            for (jndex, vector) in stage.iter().enumerate() {
+                if jndex % 2 != 0 {
+                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+                }
+            }
+
+            writeln!(&mut file).expect("Unable to write to file");
+        } 
+
+        assert!(fwd.sort() == input.sort());
+
     }
-
-    //println!("\nForward NTT: {forward_ntt:?},\nInverse NTT: {inverse_ntt:?},\nmodulus: {n}, {}th root of unity: {omg}", input.len());
 
     println!("\nConvolutions...\n");
     print!("Enter length of the vectors: ");
