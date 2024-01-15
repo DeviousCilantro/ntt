@@ -215,6 +215,7 @@ fn naive_ntt(input: &[Integer], n: &Integer, omg: &Integer, inverse: bool) -> Ve
         .collect()
 }
 
+// Precompute the powers of the 2n-th root of unity
 fn compute_powers_of_psi(n: usize, psi: &Integer, q: &Integer) -> Vec<Integer> {
     let mut powers = Vec::with_capacity(n);
     let mut current_power = Integer::from(1);
@@ -227,6 +228,7 @@ fn compute_powers_of_psi(n: usize, psi: &Integer, q: &Integer) -> Vec<Integer> {
     powers
 }
 
+// Bit-reverse the ordering of the vector elements
 fn bit_reverse_order(vec: Vec<Integer>, n: usize) -> Vec<Integer> {
     let log_n = (n as f64).log2() as u32;
     let mut pairs: Vec<_> = vec.into_iter()
@@ -241,89 +243,13 @@ fn bit_reverse_order(vec: Vec<Integer>, n: usize) -> Vec<Integer> {
     pairs.into_iter().map(|(_, x)| x).collect()
 }
 
-fn iterative_ct(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer, butterflies: &mut Vec<Vec<Integer>>, inverse: bool) {
-    let n = x.len();
-    let mut t = n / 2;
-    let mut m = 1;
-
-    // Initialize butterflies vector
-    butterflies.clear();
-    butterflies.push(x.clone());  // Store initial state
-
-    while m < n {
-        let mut k = 0;
-        for i in 0..m {
-            let s = &g[m + i];
-
-            for j in k..(k + t) {
-                let u = x[j].clone();
-                let v = mg_reduce(&q, &x[j + t], &s);
-
-                x[j] = br_reduce(&q, &Integer::from(u.clone() + &v));
-                x[j + t] = br_reduce(&q, &Integer::from(u - &v));
-            }
-
-            k += 2 * t;
-        }
-
-        if inverse {
-            for xi in x.iter_mut() {
-                *xi = mg_reduce(&q, &xi, &Integer::from(n).invert(&q).unwrap());
-            }
-        }
-
-        // Store the state after each iteration
-        butterflies.push(x.clone());
-
-        t /= 2;
-        m *= 2;
-    }
+// Compute modular multiplicative inverses of the powers of the root of unity
+fn compute_inverses(powers: &Vec<Integer>, q: &Integer) -> Vec<Integer> {
+    powers.iter().map(|x| x.clone().invert(q).unwrap()).collect()
 }
 
-
-fn iterative_gs(x: &mut Vec<Integer>, g_inv: &Vec<Integer>, q: &Integer, n_inv: &Integer, butterflies: &mut Vec<Vec<Integer>>) {
-    let n = x.len();
-    let mut t = 1;
-    let mut m = n / 2;
-
-    // Initialize butterflies vector
-    butterflies.clear();
-    butterflies.push(x.clone());  // Store initial state
-
-    while m > 0 {
-        let mut k = 0;
-        for i in 0..m {
-            let s = &g_inv[m + i];
-
-            for j in k..(k + t) {
-                let u = x[j].clone();
-                let v = x[j + t].clone();
-
-                x[j] = br_reduce(&q, &Integer::from(u.clone() + &v));
-                let w = br_reduce(&q, &Integer::from(u - &v));
-                x[j + t] = mg_reduce(&q, &w, &s);
-            }
-
-            k += 2 * t;
-        }
-
-        // Store the state after each iteration
-        butterflies.push(x.clone());
-
-        t *= 2;
-        m /= 2;
-    }
-
-    // Final normalization step
-    for xi in x.iter_mut() {
-        *xi = mg_reduce(&q, &xi, &n_inv);
-    }
-
-    // Store the final state
-    butterflies.push(x.clone());
-}
-
-// Compute the forward transform of a given (2^n)-length vector ∀ n ∈ ℕ via Cooley-Tukey butterfly interleaving
+// Compute the forward/inverse transforms of a given (2^n)-length vector ∀ n ∈ ℕ via recursive Cooley-Tukey butterfly interleaving
+// and n-th root of unity
 fn recursive_ct(
     input: &mut Vec<Integer>, 
     n: &Integer, 
@@ -386,7 +312,8 @@ fn recursive_ct(
     butterflies[depth].push(input.clone());
 }
 
-// Compute the inverse transform of a given (2^n)-length vector ∀ n ∈ ℕ via Gentleman-Sande butterfly interleaving
+// Compute the forward/inverse transforms of a given (2^n)-length vector ∀ n ∈ ℕ via Gentleman-Sande butterfly interleaving
+// and n-th root of unity
 fn recursive_gs(
     input: &mut [Integer], 
     n: &Integer, 
@@ -451,20 +378,15 @@ fn recursive_gs(
     butterflies[depth].push(input.to_vec());
 }
 
-// Naive polynomial multiplication
+// Naive polynomial multiplication to verify correctness of CT/GS butterfly operations
 fn poly_mult(a: &[Integer], b: &[Integer], modulus: &Integer, n: usize, nega: bool) -> Vec<Integer> {
     let mut result = vec![Integer::from(0); 2 * n - 1];
 
     // Polynomial multiplication
     for i in 0..n {
         for j in 0..n {
-            result[i + j] += &a[i] * &b[j];
+            result[i + j] += mg_reduce(&modulus, &a[i], &b[j]);
         }
-    }
-
-    // Modulo reduction for each coefficient
-    for i in 0..2 * n - 1 {
-        result[i] %= modulus;
     }
 
     // Reduction by x^n + 1 / x^n - 1
@@ -472,10 +394,9 @@ fn poly_mult(a: &[Integer], b: &[Integer], modulus: &Integer, n: usize, nega: bo
         for i in n..2 * n - 1 {
             result[i - n] = br_reduce(&modulus, &Integer::from(&result[i - n] - &result[i]));
         }
-    }
-    else {
+    } else {
         for i in n..2 * n - 1 {
-            result[i - n] = br_reduce(&modulus, &Integer::from(&result[i - n] + &result[i]));
+            result[i - n] = br_reduce(&modulus, &Integer::from(&result[i - n] + &result[i - n + 1]));
         }
     }
 
@@ -483,8 +404,93 @@ fn poly_mult(a: &[Integer], b: &[Integer], modulus: &Integer, n: usize, nega: bo
     result
 }
 
-// Perform a circular convolution on two vectors x, y i.e. NTT^(-1)[NTT(x) . NTT(y)]
-// where '.' is the Hadamard product of two vectors, NTT^(-1) is the inverse transform
+// Iterative Cooley-Tukey butterfly with bit-reversed powers of the 2n-th root of unity, takes input in standard
+// ordering and produces output in bit-reversed ordering, to compute the forward transform
+fn iterative_ct(x: &mut Vec<Integer>, g: &Vec<Integer>, q: &Integer, butterflies: &mut Vec<Vec<Integer>>, inverse: bool) {
+    let n = x.len();
+    let mut t = n / 2;
+    let mut m = 1;
+
+    // Initialize butterflies vector
+    butterflies.clear();
+    butterflies.push(x.clone());  // Store initial state
+
+    while m < n {
+        let mut k = 0;
+        for i in 0..m {
+            let s = &g[m + i];
+
+            for j in k..(k + t) {
+                let u = x[j].clone();
+                let v = mg_reduce(&q, &x[j + t], &s);
+
+                x[j] = br_reduce(&q, &Integer::from(u.clone() + &v));
+                x[j + t] = br_reduce(&q, &Integer::from(u - &v));
+            }
+
+            k += 2 * t;
+        }
+
+        if inverse {
+            for xi in x.iter_mut() {
+                *xi = mg_reduce(&q, &xi, &Integer::from(n).invert(&q).unwrap());
+            }
+        }
+
+        // Store the state after each iteration
+        butterflies.push(x.clone());
+
+        t /= 2;
+        m *= 2;
+    }
+}
+
+// Iterative Gentleman-Sande butterfly with bit-reversed powers of the 2n-th root of unity, takes input in bit-reversed
+// ordering and produces output in standard ordering, to compute the inverse transform
+fn iterative_gs(x: &mut Vec<Integer>, g_inv: &Vec<Integer>, q: &Integer, n_inv: &Integer, butterflies: &mut Vec<Vec<Integer>>) {
+    let n = x.len();
+    let mut t = 1;
+    let mut m = n / 2;
+
+    // Initialize butterflies vector
+    butterflies.clear();
+    butterflies.push(x.clone());  // Store initial state
+
+    while m > 0 {
+        let mut k = 0;
+        for i in 0..m {
+            let s = &g_inv[m + i];
+
+            for j in k..(k + t) {
+                let u = x[j].clone();
+                let v = x[j + t].clone();
+
+                x[j] = br_reduce(&q, &Integer::from(u.clone() + &v));
+                let w = br_reduce(&q, &Integer::from(u - &v));
+                x[j + t] = mg_reduce(&q, &w, &s);
+            }
+
+            k += 2 * t;
+        }
+
+        // Store the state after each iteration
+        butterflies.push(x.clone());
+
+        t *= 2;
+        m /= 2;
+    }
+
+    // Final normalization step (scaling by 1/n)
+    for xi in x.iter_mut() {
+        *xi = mg_reduce(&q, &xi, &n_inv);
+    }
+
+    // Store the final state
+    butterflies.push(x.clone());
+}
+
+// Perform circular/negacyclic convolutions on two vectors x, y i.e. NTT^(-1)[NTT(x) . NTT(y)]
+// where '.' is the element-wise product of two vectors, NTT^(-1) is the inverse transform
 fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Integer> {
     // Ensure the vectors are of the same length
     assert_eq!(vec_x.len(), vec_y.len());
@@ -541,7 +547,7 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
         println!("\nNTT(X): {ntt_x:?}");
         println!("NTT(Y): {ntt_y:?}");
 
-        // Perform a Hadamard product on NTT(x) and NTT(y) reduced modulo n
+        // Perform a element-wise product on NTT(x) and NTT(y) reduced modulo n
         let mut ntt_mult: Vec<Integer>= ntt_x
             .iter()
             .zip(ntt_y.iter())
@@ -565,6 +571,7 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
         return naive_ntt(&ntt_mult, &n, &omg, true);
     }
 
+    // Compute the negacyclic convolution
     println!("Computing negacyclic convolution...");
 
     ntt_x = vec_x.clone().to_vec();
@@ -589,17 +596,12 @@ fn convolution(vec_x: &[Integer], vec_y: &[Integer], circular: bool) -> Vec<Inte
     println!("NTT(X) ∘ NTT(Y): {ntt_mult:?}");
 
     let mut butterflies = Vec::new();
-    // Return NTT^(-1)(ntt_mult) as the negacyclic convolution
+
     iterative_gs(&mut ntt_mult, &compute_inverses(&psi_rev, &n), &n, &Integer::from(vec_x.len()).invert(&n).unwrap(), &mut butterflies);
 
     assert_eq!(ntt_mult, poly_mult(&vec_x, &vec_y, &n, vec_x.len(), true));
 
     ntt_mult
-}
-
-// Compute modular multiplicative inverses of the powers of the root of unity
-fn compute_inverses(powers: &Vec<Integer>, q: &Integer) -> Vec<Integer> {
-    powers.iter().map(|x| x.clone().invert(q).unwrap()).collect()
 }
 
 fn main() {
