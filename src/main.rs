@@ -1,6 +1,7 @@
 use rug::{Integer, Float};
 use std::ops::{BitAnd, Shr};
 use rug::integer::IsPrime;
+use std::time::Instant;
 use rug::ops::Pow;
 use ring::rand::{SystemRandom, SecureRandom};
 use rug::ops::DivRounding;
@@ -639,24 +640,107 @@ fn main() {
     assert_eq!(omg, mg_reduce(&n, &phi, &phi));
 
     // Calculate the forward/inverse transforms of the vector using the naive method
+    let start_1 = Instant::now();
     let forward_ntt = naive_ntt(&input, &n, &omg, false);
+    let end_1 = start_1.elapsed();
+    let start_2 = Instant::now();
     let inverse_ntt = naive_ntt(&forward_ntt, &n, &omg, true);
+    let end_2 = start_2.elapsed();
 
-
-    let psi = compute_powers_of_psi(input.len(), &phi, &n);
-    let psi_rev = bit_reverse_order(psi.clone(), input.len());
+    let psi = compute_powers_of_psi(l, &phi, &n);
+    let psi_rev = bit_reverse_order(psi.clone(), l);
 
     println!("modulus: {:?}", &n);
     println!("nth root of unity: {omg}");
 
     println!("naive forward_ntt: {:?}", forward_ntt);
     println!("naive inverse_ntt: {:?}", inverse_ntt);
-
-    println!("2nth root of unity: {phi}");
-    println!("precomputed powers (bit-reversed): {:?}", &psi_rev);
+    println!("average time: {:?}", (end_1 + end_2) / 2);
 
     let mut butterflies = Vec::new();
+
+    let l_inv = Integer::from(l).invert(&n).unwrap();
+    let start_1 = Instant::now();
+    recursive_ct(&mut input, &n, &omg, 0, &mut butterflies, false, &l_inv);
+    let end_1 = start_1.elapsed();
+    println!("\nrecursive_ct: {:?}", input);
+    println!("butterflies: {:?}", butterflies);
+    let mut file = File::create("recursive_ct_calc.txt").expect("Unable to create file");
+
+    for (index, stage) in butterflies.iter().enumerate() {
+        writeln!(&mut file, "at depth {}:", index).expect("Unable to write to file");
+
+        for (jndex, vector) in stage.iter().enumerate() {
+            if jndex % 2 == 0 {
+                write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+            }
+        }
+
+        writeln!(&mut file).expect("Unable to write to file");
+    }
+
+    butterflies.reverse();
+
+    for (index, stage) in butterflies.iter().enumerate() {
+        let depth = butterflies.len() - 1 - index;
+        writeln!(&mut file, "computed at depth {}:", depth).expect("Unable to write to file");
+
+        for (jndex, vector) in stage.iter().enumerate() {
+            if jndex % 2 != 0 {
+                write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+            }
+        }
+
+        writeln!(&mut file).expect("Unable to write to file");
+    }        
+    let mut butterflies = Vec::new();
+    let omg_inv = omg.clone().invert(&n).unwrap();
+    let l_inv = Integer::from(l).invert(&n).unwrap();
+    let start_2 = Instant::now();
+    recursive_gs(&mut input, &n, &omg, &omg_inv, 0, &mut butterflies, true, &l_inv) ;
+    let end_2 = start_2.elapsed();
+
+    println!("\nrecursive_gs: {:?}", input);
+    println!("butterflies: {:?}", butterflies);
+    println!("average time: {:?}", (end_1 + end_2) / 2);
+
+    let mut file = File::create("recursive_gs_calc.txt").expect("Unable to create file");
+
+    for (index, stage) in butterflies.iter().enumerate() {
+        writeln!(&mut file, "at depth {}:", index).expect("Unable to write to file");
+
+        for (jndex, vector) in stage.iter().enumerate() {
+            if jndex % 2 == 0 {
+                write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+            }
+        }
+
+        writeln!(&mut file).expect("Unable to write to file");
+    }
+
+    butterflies.reverse();
+
+    for (index, stage) in butterflies.iter().enumerate() {
+        let depth = butterflies.len() - 1 - index;
+        writeln!(&mut file, "computed at depth {}:", depth).expect("Unable to write to file");
+
+        for (jndex, vector) in stage.iter().enumerate() {
+            if jndex % 2 != 0 {
+                write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
+            }
+        }
+
+        writeln!(&mut file).expect("Unable to write to file");
+    } 
+
+    let mut butterflies = Vec::new();
+    let start_1 = Instant::now();
     iterative_ct(&mut input, &psi_rev, &n, &mut butterflies, false);
+    let end_1 = start_1.elapsed();
+
+    println!("\n2nth root of unity: {phi}");
+    println!("precomputed powers (bit-reversed): {:?}", &psi_rev);
+    
     println!("\niterative_ct: {:?}", input);
     println!("butterflies: {:?}", butterflies);
     let mut file = File::create("iterative_ct_calc.txt").expect("Unable to create file");
@@ -665,7 +749,9 @@ fn main() {
         writeln!(&mut file, "{:?}", vector).expect("Unable to write to file");
     }
     let mut butterflies = Vec::new();
-    iterative_gs(&mut input, &compute_inverses(&psi_rev, &n), &n, &Integer::from(l).invert(&n).unwrap(), &mut butterflies);
+    let start_2 = Instant::now();
+    iterative_gs(&mut input, &compute_inverses(&psi_rev, &n), &n, &l_inv, &mut butterflies);
+    let end_2 = start_2.elapsed();
     println!("\niterative_gs: {:?}", input);
     println!("butterflies: {:?}", butterflies);
     let mut file = File::create("iterative_gs_calc.txt").expect("Unable to create file");
@@ -674,82 +760,8 @@ fn main() {
         writeln!(&mut file, "{:?}", vector).expect("Unable to write to file");
     }
 
-    let mut butterflies = Vec::new();
+    println!("average time: {:?}", (end_1 + end_2) / 2);
 
-    // If the vector length is a power of two, calculate the forward+inverse transform using
-    // CT/GS butterfly interleaving to verify correctness
-    if (input.len() & (input.len() - 1)) == 0 { 
-        let mut fwd = input.clone();
-
-        recursive_ct(&mut fwd, &n, &omg, 0, &mut butterflies, false, &Integer::from(input.len()).invert(&n).unwrap());
-        println!("\nrecursive_ct: {:?}", fwd);
-        println!("butterflies: {:?}", butterflies);
-        let mut file = File::create("recursive_ct_calc.txt").expect("Unable to create file");
-
-        for (index, stage) in butterflies.iter().enumerate() {
-            writeln!(&mut file, "at depth {}:", index).expect("Unable to write to file");
-
-            for (jndex, vector) in stage.iter().enumerate() {
-                if jndex % 2 == 0 {
-                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
-                }
-            }
-
-            writeln!(&mut file).expect("Unable to write to file");
-        }
-
-        butterflies.reverse();
-
-        for (index, stage) in butterflies.iter().enumerate() {
-            let depth = butterflies.len() - 1 - index;
-            writeln!(&mut file, "computed at depth {}:", depth).expect("Unable to write to file");
-
-            for (jndex, vector) in stage.iter().enumerate() {
-                if jndex % 2 != 0 {
-                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
-                }
-            }
-
-            writeln!(&mut file).expect("Unable to write to file");
-        }        
-        let mut butterflies = Vec::new();
-        recursive_gs(&mut fwd, &n, &omg, &omg.clone().invert(&n).unwrap(), 0, &mut butterflies, true, &Integer::from(input.len()).invert(&n).unwrap());
-
-        println!("\nrecursive_gs: {:?}", fwd);
-        println!("butterflies: {:?}", butterflies);
-
-        let mut file = File::create("recursive_gs_calc.txt").expect("Unable to create file");
-
-        for (index, stage) in butterflies.iter().enumerate() {
-            writeln!(&mut file, "at depth {}:", index).expect("Unable to write to file");
-
-            for (jndex, vector) in stage.iter().enumerate() {
-                if jndex % 2 == 0 {
-                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
-                }
-            }
-
-            writeln!(&mut file).expect("Unable to write to file");
-        }
-
-        butterflies.reverse();
-
-        for (index, stage) in butterflies.iter().enumerate() {
-            let depth = butterflies.len() - 1 - index;
-            writeln!(&mut file, "computed at depth {}:", depth).expect("Unable to write to file");
-
-            for (jndex, vector) in stage.iter().enumerate() {
-                if jndex % 2 != 0 {
-                    write!(&mut file, "{:?}\t", vector).expect("Unable to write to file");
-                }
-            }
-
-            writeln!(&mut file).expect("Unable to write to file");
-        } 
-
-        assert!(fwd.sort() == input.sort());
-
-    }
 
     println!("\nConvolutions...\n");
     print!("Enter length of the vectors: ");
